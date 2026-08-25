@@ -1,0 +1,405 @@
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
+
+
+# =========================================================
+# PROJECT PATHS
+# =========================================================
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+DATA_DIR = BASE_DIR / "data"
+UPLOAD_DIR = DATA_DIR / "uploads"
+
+DATA_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+
+# =========================================================
+# LOAD CSV / EXCEL
+# =========================================================
+
+def load_file(file):
+
+    filename = file.name.lower()
+
+    try:
+        if filename.endswith(".csv"):
+            df = pd.read_csv(file)
+
+        elif filename.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(file)
+
+        else:
+            raise ValueError(
+                "Unsupported file format. Please upload CSV or Excel."
+            )
+
+        return clean_data(df)
+
+    except Exception as e:
+        raise ValueError(f"Could not read the file: {e}")
+
+
+# =========================================================
+# CLEAN DATA
+# =========================================================
+
+def clean_data(df):
+
+    if df is None:
+        raise ValueError("No data was provided.")
+
+    if df.empty:
+        raise ValueError("The uploaded file is empty.")
+
+    df = df.dropna(how="all")
+    df = df.dropna(axis=1, how="all")
+
+    df.columns = [
+        str(column)
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        for column in df.columns
+    ]
+
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    date_columns = [
+        "date",
+        "datetime",
+        "timestamp",
+        "time"
+    ]
+
+    for column in date_columns:
+        if column in df.columns:
+            df[column] = pd.to_datetime(
+                df[column],
+                errors="coerce"
+            )
+            break
+
+    return df
+
+
+# =========================================================
+# VALIDATE DATA
+# =========================================================
+
+def validate_data(df):
+
+    errors = []
+    warnings = []
+
+    if df is None or df.empty:
+        errors.append("Dataset is empty.")
+        return errors, warnings
+
+    duplicate_count = int(df.duplicated().sum())
+
+    if duplicate_count > 0:
+        warnings.append(
+            f"{duplicate_count} duplicate rows found."
+        )
+
+    missing = df.isna().sum()
+    missing_columns = missing[missing > 0]
+
+    if not missing_columns.empty:
+        warnings.append(
+            "Missing values found in: "
+            + ", ".join(missing_columns.index.tolist())
+        )
+
+    possible_date_columns = [
+        "date",
+        "datetime",
+        "timestamp",
+        "time"
+    ]
+
+    found_date = False
+
+    for column in possible_date_columns:
+        if column in df.columns:
+            found_date = True
+            break
+
+    if not found_date:
+        warnings.append(
+            "No standard date/time column detected."
+        )
+
+    numeric_columns = df.select_dtypes(
+        include="number"
+    ).columns
+
+    if len(numeric_columns) == 0:
+        warnings.append(
+            "No numeric columns detected."
+        )
+
+    return errors, warnings
+
+
+# =========================================================
+# SAVE UPLOADED DATA
+# =========================================================
+
+def save_uploaded_data(df, filename):
+
+    if df is None or df.empty:
+        raise ValueError(
+            "Cannot save an empty dataset."
+        )
+
+    safe_filename = Path(filename).name
+    df = clean_data(df)
+
+    output_path = UPLOAD_DIR / safe_filename
+
+    if safe_filename.lower().endswith(".csv"):
+
+        df.to_csv(
+            output_path,
+            index=False
+        )
+
+    elif safe_filename.lower().endswith(
+        (".xlsx", ".xls")
+    ):
+
+        df.to_excel(
+            output_path,
+            index=False
+        )
+
+    else:
+
+        raise ValueError(
+            "Only CSV and Excel files are supported."
+        )
+
+    return output_path
+
+
+# =========================================================
+# LOAD SAVED DATA
+# =========================================================
+
+def load_saved_data(filename):
+
+    safe_filename = Path(filename).name
+    file_path = UPLOAD_DIR / safe_filename
+
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {filename}"
+        )
+
+    if file_path.suffix.lower() == ".csv":
+        df = pd.read_csv(file_path)
+
+    elif file_path.suffix.lower() in [".xlsx", ".xls"]:
+        df = pd.read_excel(file_path)
+
+    else:
+        raise ValueError(
+            "Unsupported file format."
+        )
+
+    return clean_data(df)
+
+
+# =========================================================
+# GET AVAILABLE FILES
+# =========================================================
+
+def get_uploaded_files():
+
+    if not UPLOAD_DIR.exists():
+        return []
+
+    files = []
+
+    for file in UPLOAD_DIR.iterdir():
+
+        if file.is_file() and file.suffix.lower() in [
+            ".csv",
+            ".xlsx",
+            ".xls"
+        ]:
+            files.append(file.name)
+
+    return sorted(files)
+
+
+# =========================================================
+# GET FILE INFORMATION
+# =========================================================
+
+def get_file_info(filename):
+
+    file_path = UPLOAD_DIR / Path(filename).name
+
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {filename}"
+        )
+
+    df = load_saved_data(filename)
+    stat = file_path.stat()
+
+    return {
+        "filename": file_path.name,
+        "rows": len(df),
+        "columns": len(df.columns),
+        "size_kb": round(stat.st_size / 1024, 2),
+        "last_modified": datetime.fromtimestamp(
+            stat.st_mtime
+        ),
+        "column_names": list(df.columns)
+    }
+
+
+# =========================================================
+# DATA SUMMARY
+# =========================================================
+
+def get_data_summary(df):
+
+    if df is None or df.empty:
+
+        return {
+            "rows": 0,
+            "columns": 0,
+            "column_names": [],
+            "missing_values": 0,
+            "duplicate_rows": 0
+        }
+
+    return {
+        "rows": len(df),
+        "columns": len(df.columns),
+        "column_names": list(df.columns),
+        "missing_values": int(
+            df.isna().sum().sum()
+        ),
+        "duplicate_rows": int(
+            df.duplicated().sum()
+        )
+    }
+
+
+# =========================================================
+# FIND DATE COLUMN
+# =========================================================
+
+def find_date_column(df):
+
+    if df is None or df.empty:
+        return None
+
+    possible_columns = [
+        "date",
+        "datetime",
+        "timestamp",
+        "time"
+    ]
+
+    for column in possible_columns:
+
+        if column in df.columns:
+            return column
+
+    return None
+
+
+# =========================================================
+# GET DATE RANGE
+# =========================================================
+
+def get_date_range(df):
+
+    date_column = find_date_column(df)
+
+    if date_column is None:
+        return None, None
+
+    dates = pd.to_datetime(
+        df[date_column],
+        errors="coerce"
+    ).dropna()
+
+    if dates.empty:
+        return None, None
+
+    return dates.min(), dates.max()
+
+
+# =========================================================
+# FILTER BY DATE
+# =========================================================
+
+def filter_by_date(
+    df,
+    start_date=None,
+    end_date=None
+):
+
+    if df is None or df.empty:
+        return df
+
+    date_column = find_date_column(df)
+
+    if date_column is None:
+        return df
+
+    result = df.copy()
+
+    result[date_column] = pd.to_datetime(
+        result[date_column],
+        errors="coerce"
+    )
+
+    if start_date is not None:
+
+        start_date = pd.to_datetime(start_date)
+
+        result = result[
+            result[date_column] >= start_date
+        ]
+
+    if end_date is not None:
+
+        end_date = pd.to_datetime(end_date)
+
+        end_date = end_date + pd.Timedelta(days=1)
+
+        result = result[
+            result[date_column] < end_date
+        ]
+
+    return result
+
+
+# =========================================================
+# DELETE UPLOADED FILE
+# =========================================================
+
+def delete_uploaded_file(filename):
+
+    file_path = UPLOAD_DIR / Path(filename).name
+
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {filename}"
+        )
+
+    file_path.unlink()
+
+    return True
